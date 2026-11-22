@@ -16,7 +16,24 @@ URLS_TO_CHECK = [
     "https://emploitic.com/offres-d-emploi/q-support-l-oran-algerie",
 ]
 
-IGNORE_KEYWORDS = ["commercial", "vendeur", "prevendeur", "comptable", "chauffeur"]
+# Title must contain at least one of these relevant keywords
+RELEVANT_KEYWORDS = [
+    "reseau", "réseau", "network", "system", "système", "sysadmin",
+    "support", "helpdesk", "it", "informatique", "technicien",
+    "noc", "administrateur", "admin", "linux", "windows", "cisco",
+    "securite", "sécurité", "cyber", "cloud", "devops",
+    "python", "developpeur", "développeur", "data", "ia", "ai", "vision"
+]
+
+# Skip roles asking for experience/years or senior/management titles
+BLOCK_KEYWORDS = [
+    "senior", "sr", "lead", "manager", "directeur", "responsable",
+    "chef de projet", "architect", "architecte", "consultant senior",
+    "commercial", "vendeur", "prevendeur", "pré-vente", "comptable",
+    "chauffeur", "1 an", "2 ans", "3 ans", "4 ans", "5 ans",
+    "6 ans", "7 ans", "8 ans", "10 ans", "ans d'expérience",
+    "années d'expérience", "expérimenté", "experimente"
+]
 
 def load_seen():
     if os.path.exists(SEEN_FILE):
@@ -28,12 +45,18 @@ def save_seen(seen_set):
     with open(SEEN_FILE, "w", encoding="utf-8") as f:
         json.dump(sorted(list(seen_set)), f, indent=2)
 
+def is_good_fit(title: str) -> bool:
+    t = title.lower()
+    if any(bad in t for bad in BLOCK_KEYWORDS):
+        return False
+    return any(good in t for good in RELEVANT_KEYWORDS)
+
 def send_phone_notification(title, company, link):
     r = requests.post(
         f"https://ntfy.sh/{NTFY_TOPIC}",
         data=f"{company}\nTap to view & apply.".encode("utf-8"),
         headers={
-            "Title": f"Oran Job: {title[:80]}",
+            "Title": f"Oran Match: {title[:80]}",
             "Priority": "high",
             "Tags": "briefcase",
             "Click": link,
@@ -45,7 +68,7 @@ def send_phone_notification(title, company, link):
 
 def scrape_jobs():
     seen = load_seen()
-    matched = 0
+    kept = 0
     sent = 0
 
     with sync_playwright() as p:
@@ -62,9 +85,7 @@ def scrape_jobs():
                 soup = BeautifulSoup(page.content(), "html.parser")
 
                 if "optioncarriere.dz" in url:
-                    cards = soup.select("article.job")
-                    print(f"[INFO] {url} -> {len(cards)} cards")
-                    for job in cards:
+                    for job in soup.select("article.job"):
                         a_tag = job.select_one("header h2 a") or job.select_one("h2 a") or job.select_one("a")
                         if not a_tag:
                             continue
@@ -76,29 +97,27 @@ def scrape_jobs():
                         company_tag = job.select_one("p.company") or job.select_one(".company")
                         company = company_tag.get_text(strip=True) if company_tag else "Oran"
 
-                        if any(bad in title.lower() for bad in IGNORE_KEYWORDS):
+                        if not is_good_fit(title):
                             continue
 
-                        matched += 1
+                        kept += 1
                         if full_link not in seen:
                             seen.add(full_link)
                             send_phone_notification(title, company, full_link)
                             sent += 1
 
                 elif "emploitic.com" in url:
-                    links = soup.select("a[href*='/offres-d-emploi/']")
-                    print(f"[INFO] {url} -> {len(links)} links")
-                    for a_tag in links:
+                    for a_tag in soup.select("a[href*='/offres-d-emploi/']"):
                         title = a_tag.get_text(" ", strip=True)
                         href = a_tag.get("href", "")
                         if len(title) < 6 or "/q-" in href or "/l-" in href:
                             continue
                         full_link = href if href.startswith("http") else f"https://emploitic.com{href}"
 
-                        if any(bad in title.lower() for bad in IGNORE_KEYWORDS):
+                        if not is_good_fit(title):
                             continue
 
-                        matched += 1
+                        kept += 1
                         if full_link not in seen:
                             seen.add(full_link)
                             send_phone_notification(title, "Emploitic Oran", full_link)
@@ -110,7 +129,7 @@ def scrape_jobs():
         browser.close()
 
     save_seen(seen)
-    print(f"[SUMMARY] Matched: {matched}, Sent: {sent}")
+    print(f"[SUMMARY] Good fits found: {kept}, New sent: {sent}")
 
 if __name__ == "__main__":
     scrape_jobs()
